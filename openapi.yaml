@@ -2,13 +2,116 @@ openapi: 3.0.3
 info:
   title: Sample API
   version: 1.0.0
+  description: >-
+    API for ICHRA marketplace integrations. This draft includes a snapshot ingestion
+    endpoint allowing partners to POST batches of employee enrollment snapshots.
+    Reference identifier fields (partnerReferenceId, internalEmployeeId, externalEmployeeId)
+    are placeholders and may be renamed or further constrained once partner contract
+    details are finalized.
 paths:
-  /hello:
-    get:
-      summary: Returns a greeting
+  /member-snapshots:
+    post:
+      summary: Submit enrollment snapshot batch
+      description: >-
+        Accepts an array of employee enrollment snapshot objects representing an employee (primary) and any dependents and the plan they are enrolled in. Reference identifier fields are placeholders (TBD) for partner and internal linking.
+      operationId: submitEnrollmentSnapshots
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: '#/components/schemas/EnrollmentSnapshotInput'
+            examples:
+              singleSnapshot:
+                summary: One employee with a dependent
+                value:
+                  - partnerReferenceId: PARTNER-12345
+                    internalEmployeeId: EMP-9999
+                    externalEmployeeId: EXT-5555
+                    snapshotTimestamp: '2025-09-16T15:04:05Z'
+                    primary:
+                      firstName: Jane
+                      lastName: Doe
+                      dateOfBirth: '1988-03-12'
+                      gender: F
+                      email: jane.doe@example.com
+                      address:
+                        line1: 123 Main St
+                        city: Madison
+                        state: WI
+                        postalCode: '53703'
+                        country: US
+                    dependents:
+                      - relationship: spouse
+                        firstName: John
+                        lastName: Doe
+                        dateOfBirth: '1987-07-01'
+                      - relationship: child
+                        firstName: Jenny
+                        lastName: Doe
+                        dateOfBirth: '2015-09-01'
+                    enrolledPlan:
+                      planId: PLAN-ABC
+                      planName: Bronze PPO
+                      carrier: Acme Health
+                      coverageLevel: family
+                      effectiveDate: '2025-10-01'
+                      terminationDate: null
+                      premium:
+                        totalMonthly: 750.00
+                        employerContribution: 500.00
+                        employeeContribution: 250.00
       responses:
-        '200':
-          description: A JSON greeting
+        '202':
+          description: Accepted snapshot batch for asynchronous processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotSubmissionResponse'
+              examples:
+                acceptedBatch:
+                  summary: Batch accepted
+                  value:
+                    batchId: BATCH-20250916-ABC123
+                    acceptedCount: 10
+                    rejectedCount: 0
+                    message: Batch accepted. Processing started.
+        '207':
+          description: Multi-status - some snapshots accepted, some rejected (synchronous validation only)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotSubmissionResponse'
+              examples:
+                partialAcceptance:
+                  summary: Partial acceptance example
+                  value:
+                    batchId: BATCH-20250916-DEF456
+                    acceptedCount: 8
+                    rejectedCount: 2
+                    message: Two snapshots failed validation; see validation endpoint for details.
+        '400':
+          description: Validation error(s) in one or more snapshot objects
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+              examples:
+                invalidField:
+                  summary: Missing required field
+                  value:
+                    message: Validation failed
+                    errors:
+                      - path: '[0].primary.firstName'
+                        code: required
+                        message: firstName is required
+                      - path: '[1].enrolledPlan.planId'
+                        code: required
+                        message: planId is required
+        '500':
+          description: Server error
           content:
             application/json:
               schema:
@@ -16,4 +119,413 @@ paths:
                 properties:
                   message:
                     type: string
-                    example: Hello world
+      tags:
+        - Enrollment Snapshots
+      x-rateLimit-tier: standard
+      x-idempotency: true
+      x-notes: Reference ID fields are placeholders pending finalized partner contract.
+  /member-snapshots/batches/{batchId}:
+    get:
+      summary: Get snapshot batch processing status
+      description: >-
+        Returns current processing status for a previously submitted enrollment snapshot batch.
+        Optionally include per-item statuses. Batch statuses may evolve through states such as
+        RECEIVED -> VALIDATING -> PROCESSING -> COMPLETED (or FAILED). Implementations may
+        expand status values; clients should treat unknown values as non-terminal unless documented otherwise.
+      operationId: getSnapshotBatchStatus
+      parameters:
+        - name: batchId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Identifier returned from the original batch submission.
+        - name: includeItems
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: When true, include per-snapshot item statuses (may be large for big batches).
+      responses:
+        '200':
+          description: Current batch status (and optionally item details)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotBatchStatus'
+              examples:
+                processingNoItems:
+                  summary: Batch still processing, items omitted
+                  value:
+                    batchId: BATCH-20250916-ABC123
+                    status: PROCESSING
+                    submittedAt: '2025-09-16T15:05:00Z'
+                    lastUpdatedAt: '2025-09-16T15:06:10Z'
+                    totalItems: 10
+                    acceptedCount: 4
+                    rejectedCount: 1
+                completedWithItems:
+                  summary: Completed with per-item statuses
+                  value:
+                    batchId: BATCH-20250916-DEF456
+                    status: COMPLETED
+                    submittedAt: '2025-09-16T14:55:00Z'
+                    lastUpdatedAt: '2025-09-16T15:00:30Z'
+                    totalItems: 3
+                    acceptedCount: 2
+                    rejectedCount: 1
+                    items:
+                      - index: 0
+                        state: ACCEPTED
+                        employeeInternalId: EMP-123
+                        partnerReferenceId: PARTNER-1
+                      - index: 1
+                        state: REJECTED
+                        partnerReferenceId: PARTNER-2
+                        errors:
+                          - code: required
+                            message: planId is required
+                            path: '$.enrolledPlan.planId'
+                      - index: 2
+                        state: ACCEPTED
+                        employeeInternalId: EMP-789
+                        partnerReferenceId: PARTNER-3
+        '400':
+          description: Invalid batchId format or unsupported query combination
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+              examples:
+                invalidId:
+                  summary: Invalid batchId format
+                  value:
+                    message: Validation failed
+                    errors:
+                      - path: 'batchId'
+                        code: pattern
+                        message: batchId format invalid
+        '404':
+          description: Batch not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              examples:
+                notFound:
+                  summary: Unknown batch
+                  value:
+                    message: Batch not found
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+              examples:
+                serverError:
+                  summary: Unexpected error
+                  value:
+                    message: Unexpected server error
+      tags:
+        - Enrollment Snapshots
+
+components:
+  schemas:
+    EnrollmentSnapshotInput:
+      type: object
+      required:
+        - partnerReferenceId
+        - internalEmployeeId
+        - snapshotTimestamp
+        - primary
+        - enrolledPlan
+      description: >-
+        An enrollment snapshot representing the state of a single employee's ICHRA marketplace enrollment (including dependents) at a point in time. Reference identifiers are provisional (TBD) and may be renamed as integration requirements are finalized.
+      properties:
+        partnerReferenceId:
+          type: string
+          maxLength: 100
+          description: Partner-supplied stable identifier linking back to partner system (TBD final field name).
+          example: PARTNER-12345
+        internalEmployeeId:
+          type: string
+          maxLength: 100
+          description: Internal system employee identifier (TBD final field name).
+          example: EMP-9999
+        externalEmployeeId:
+          type: string
+          maxLength: 100
+          nullable: true
+          description: Optional third-party or client-facing employee identifier.
+        snapshotTimestamp:
+          type: string
+          format: date-time
+          description: UTC timestamp when this snapshot was generated in the submitting system.
+        primary:
+          $ref: '#/components/schemas/PersonPrimary'
+        dependents:
+          type: array
+          description: Zero or more dependent individuals covered under the plan.
+          items:
+            $ref: '#/components/schemas/PersonDependent'
+        enrolledPlan:
+          $ref: '#/components/schemas/EnrolledPlan'
+        metadata:
+          type: object
+          additionalProperties:
+            type: string
+          description: Optional arbitrary key/value metadata for future extension.
+      additionalProperties: false
+
+    PersonPrimary:
+      type: object
+      required: [firstName, lastName, dateOfBirth]
+      properties:
+        firstName:
+            type: string
+            maxLength: 80
+        middleName:
+            type: string
+            maxLength: 80
+            nullable: true
+        lastName:
+            type: string
+            maxLength: 120
+        suffix:
+            type: string
+            maxLength: 20
+            nullable: true
+        dateOfBirth:
+            type: string
+            format: date
+        gender:
+            type: string
+            enum: [M, F, X, U]
+            description: M=Male, F=Female, X=Non-Binary/Other, U=Unknown/Not Provided
+        email:
+            type: string
+            format: email
+            nullable: true
+        phone:
+            type: string
+            nullable: true
+            description: E.164 format recommended (+1...)
+        address:
+            $ref: '#/components/schemas/Address'
+        ssnLast4:
+            type: string
+            pattern: '^[0-9]{4}$'
+            nullable: true
+            description: Last four digits only if available/allowed.
+    
+    PersonDependent:
+      type: object
+      required: [relationship, firstName, lastName, dateOfBirth]
+      properties:
+        relationship:
+          type: string
+          enum: [spouse, child, domestic_partner, other]
+        firstName:
+          type: string
+          maxLength: 80
+        middleName:
+          type: string
+          maxLength: 80
+          nullable: true
+        lastName:
+          type: string
+          maxLength: 120
+        dateOfBirth:
+          type: string
+          format: date
+        gender:
+          type: string
+          enum: [M, F, X, U]
+          nullable: true
+        disabled:
+          type: boolean
+          nullable: true
+          description: Indicates if the dependent is disabled for eligibility considerations.
+    
+    Address:
+      type: object
+      required: [line1, city, state, postalCode, country]
+      properties:
+        line1:
+          type: string
+          maxLength: 100
+        line2:
+          type: string
+          maxLength: 100
+          nullable: true
+        city:
+          type: string
+          maxLength: 100
+        state:
+          type: string
+          maxLength: 2
+          description: Two-letter state / province code.
+        postalCode:
+          type: string
+          maxLength: 15
+        country:
+          type: string
+          maxLength: 2
+          description: ISO 3166-1 alpha-2 country code.
+    
+    EnrolledPlan:
+      type: object
+      required: [planId, planName, carrier, coverageLevel, effectiveDate, premium]
+      properties:
+        planId:
+          type: string
+          description: Marketplace or internal plan identifier.
+        planName:
+          type: string
+        carrier:
+          type: string
+        metalLevel:
+          type: string
+          enum: [bronze, silver, gold, platinum, catastrophic]
+          nullable: true
+        coverageLevel:
+          type: string
+          enum: [employee_only, employee_spouse, employee_child, family]
+        effectiveDate:
+          type: string
+          format: date
+        terminationDate:
+          type: string
+          format: date
+          nullable: true
+        premium:
+          $ref: '#/components/schemas/PremiumAmounts'
+        hsaCompatible:
+          type: boolean
+          nullable: true
+        networkType:
+          type: string
+          enum: [ppo, hmo, epo, pos, other]
+          nullable: true
+    
+    PremiumAmounts:
+      type: object
+      required: [totalMonthly]
+      properties:
+        totalMonthly:
+          type: number
+          format: double
+        employerContribution:
+          type: number
+          format: double
+          nullable: true
+        employeeContribution:
+          type: number
+          format: double
+          nullable: true
+      description: Monthly premium and contribution breakdown.
+
+    SnapshotBatchStatus:
+      type: object
+      description: Status details for a submitted snapshot batch.
+      properties:
+        batchId:
+          type: string
+        status:
+          type: string
+          enum: [RECEIVED, VALIDATING, PROCESSING, COMPLETED, FAILED]
+          description: Current lifecycle state of the batch.
+        submittedAt:
+          type: string
+          format: date-time
+        lastUpdatedAt:
+          type: string
+          format: date-time
+        totalItems:
+          type: integer
+        acceptedCount:
+          type: integer
+        rejectedCount:
+          type: integer
+        failureMessage:
+          type: string
+          nullable: true
+          description: Present only if status=FAILED.
+        items:
+          type: array
+          description: Present only when includeItems=true & status has progressed beyond RECEIVED.
+          items:
+            $ref: '#/components/schemas/SnapshotItemStatus'
+      required: [batchId, status, submittedAt, lastUpdatedAt, totalItems, acceptedCount, rejectedCount]
+
+    SnapshotItemStatus:
+      type: object
+      description: Per-snapshot processing result.
+      properties:
+        index:
+          type: integer
+          description: 0-based index within original submitted array.
+        state:
+          type: string
+          enum: [PENDING, ACCEPTED, REJECTED]
+        employeeInternalId:
+          type: string
+          nullable: true
+          description: Echo of internalEmployeeId if available.
+        partnerReferenceId:
+          type: string
+          nullable: true
+        errors:
+          type: array
+          items:
+            $ref: '#/components/schemas/SnapshotItemError'
+      required: [index, state]
+
+    SnapshotItemError:
+      type: object
+      description: Error encountered processing an individual snapshot item.
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        path:
+          type: string
+          description: JSONPath-like path to offending field when applicable.
+      required: [code, message]
+
+    SnapshotSubmissionResponse:
+      type: object
+      properties:
+        batchId:
+          type: string
+        acceptedCount:
+          type: integer
+        rejectedCount:
+          type: integer
+        message:
+          type: string
+    ValidationError:
+      type: object
+      properties:
+        message:
+          type: string
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+              code:
+                type: string
+              message:
+                type: string
