@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Sample API
+  title: ICHRAX API
   version: 1.0.0
   description: >-
     API for ICHRA marketplace integrations. This draft includes a snapshot ingestion
@@ -11,10 +11,12 @@ info:
 paths:
   /member-snapshots:
     post:
-      summary: Submit enrollment snapshot batch
+      summary: Create Member Snapshot
       description: >-
         Accepts an array of employee enrollment snapshot objects representing an employee (primary) and any dependents and the plan they are enrolled in. Reference identifier fields are placeholders (TBD) for partner and internal linking.
-      operationId: submitEnrollmentSnapshots
+      operationId: createMemberSnapshot
+      tags:
+        - Member Snapshots
       requestBody:
         required: true
         content:
@@ -22,108 +24,52 @@ paths:
             schema:
               type: array
               items:
-                $ref: '#/components/schemas/EnrollmentSnapshotInput'
-            examples:
-              singleSnapshot:
-                summary: One employee with a dependent
-                value:
-                  - partnerReferenceId: PARTNER-12345
-                    internalEmployeeId: EMP-9999
-                    externalEmployeeId: EXT-5555
-                    snapshotTimestamp: '2025-09-16T15:04:05Z'
-                    primary:
-                      firstName: Jane
-                      lastName: Doe
-                      dateOfBirth: '1988-03-12'
-                      gender: F
-                      email: jane.doe@example.com
-                      address:
-                        line1: 123 Main St
-                        city: Madison
-                        state: WI
-                        postalCode: '53703'
-                        country: US
-                    dependents:
-                      - relationship: spouse
-                        firstName: John
-                        lastName: Doe
-                        dateOfBirth: '1987-07-01'
-                      - relationship: child
-                        firstName: Jenny
-                        lastName: Doe
-                        dateOfBirth: '2015-09-01'
-                    enrolledPlan:
-                      planId: PLAN-ABC
-                      planName: Bronze PPO
-                      carrier: Acme Health
-                      coverageLevel: family
-                      effectiveDate: '2025-10-01'
-                      terminationDate: null
-                      premium:
-                        totalMonthly: 750.00
-                        employerContribution: 500.00
-                        employeeContribution: 250.00
+                $ref: '#/components/schemas/InboundMemberSnapshot'
+
       responses:
-        '202':
-          description: Accepted snapshot batch for asynchronous processing
+        '201':
+          description: Successful Response - Returns the contents of the newly created Member Snapshot
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SnapshotSubmissionResponse'
-              examples:
-                acceptedBatch:
-                  summary: Batch accepted
-                  value:
-                    batchId: BATCH-20250916-ABC123
-                    acceptedCount: 10
-                    rejectedCount: 0
-                    message: Batch accepted. Processing started.
-        '207':
-          description: Multi-status - some snapshots accepted, some rejected (synchronous validation only)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SnapshotSubmissionResponse'
-              examples:
-                partialAcceptance:
-                  summary: Partial acceptance example
-                  value:
-                    batchId: BATCH-20250916-DEF456
-                    acceptedCount: 8
-                    rejectedCount: 2
-                    message: Two snapshots failed validation; see validation endpoint for details.
+                $ref: '#/components/schemas/OutboundMemberSnapshot'
         '400':
-          description: Validation error(s) in one or more snapshot objects
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ValidationError'
-              examples:
-                invalidField:
-                  summary: Missing required field
-                  value:
-                    message: Validation failed
-                    errors:
-                      - path: '[0].primary.firstName'
-                        code: required
-                        message: firstName is required
-                      - path: '[1].enrolledPlan.planId'
-                        code: required
-                        message: planId is required
-        '500':
-          description: Server error
+          description: Failure Response - Client error
           content:
             application/json:
               schema:
                 type: object
-                properties:
-                  message:
-                    type: string
-      tags:
-        - Enrollment Snapshots
-      x-rateLimit-tier: standard
-      x-idempotency: true
-      x-notes: Reference ID fields are placeholders pending finalized partner contract.
+              examples:
+                example:
+                  value:
+                    message: >-
+                      Error creating dependent. Existing dependent has matching name and date of birth: ab740704-7c37-4010-92b3-d22c6926be3e
+                    status: 400
+        '404':
+          description: Failure Response - Not found error
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                example:
+                  value:
+                    message: >-
+                      Dependent with ID ab740704-7c37-4010-92b3-d22c6926be3e does not have an associated employee.
+                    status: 404
+        '422':
+          description: Failure Response - Schema validation error
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                example:
+                  value:
+                    message: >-
+                      This snapshot is missing the following active coverages: dental for dependent ab740704-7c37-4010-92b3-d22c6926be3e. If you intend to terminate a coverage, please send a snapshot that includes a termination date before omitting it from future snapshots.
+                    status: 422
+      deprecated: false
   /member-snapshots/batches/{batchId}:
     get:
       summary: Get snapshot batch processing status
@@ -136,10 +82,10 @@ paths:
       parameters:
         - name: batchId
           in: path
+          description: Identifier returned from the original batch submission.
           required: true
           schema:
             type: string
-          description: Identifier returned from the original batch submission.
         - name: includeItems
           in: query
           required: false
@@ -239,200 +185,6 @@ paths:
 
 components:
   schemas:
-    EnrollmentSnapshotInput:
-      type: object
-      required:
-        - partnerReferenceId
-        - internalEmployeeId
-        - snapshotTimestamp
-        - primary
-        - enrolledPlan
-      description: >-
-        An enrollment snapshot representing the state of a single employee's ICHRA marketplace enrollment (including dependents) at a point in time. Reference identifiers are provisional (TBD) and may be renamed as integration requirements are finalized.
-      properties:
-        partnerReferenceId:
-          type: string
-          maxLength: 100
-          description: Partner-supplied stable identifier linking back to partner system (TBD final field name).
-          example: PARTNER-12345
-        internalEmployeeId:
-          type: string
-          maxLength: 100
-          description: Internal system employee identifier (TBD final field name).
-          example: EMP-9999
-        externalEmployeeId:
-          type: string
-          maxLength: 100
-          nullable: true
-          description: Optional third-party or client-facing employee identifier.
-        snapshotTimestamp:
-          type: string
-          format: date-time
-          description: UTC timestamp when this snapshot was generated in the submitting system.
-        primary:
-          $ref: '#/components/schemas/PersonPrimary'
-        dependents:
-          type: array
-          description: Zero or more dependent individuals covered under the plan.
-          items:
-            $ref: '#/components/schemas/PersonDependent'
-        enrolledPlan:
-          $ref: '#/components/schemas/EnrolledPlan'
-        metadata:
-          type: object
-          additionalProperties:
-            type: string
-          description: Optional arbitrary key/value metadata for future extension.
-      additionalProperties: false
-
-    PersonPrimary:
-      type: object
-      required: [firstName, lastName, dateOfBirth]
-      properties:
-        firstName:
-            type: string
-            maxLength: 80
-        middleName:
-            type: string
-            maxLength: 80
-            nullable: true
-        lastName:
-            type: string
-            maxLength: 120
-        suffix:
-            type: string
-            maxLength: 20
-            nullable: true
-        dateOfBirth:
-            type: string
-            format: date
-        gender:
-            type: string
-            enum: [M, F, X, U]
-            description: M=Male, F=Female, X=Non-Binary/Other, U=Unknown/Not Provided
-        email:
-            type: string
-            format: email
-            nullable: true
-        phone:
-            type: string
-            nullable: true
-            description: E.164 format recommended (+1...)
-        address:
-            $ref: '#/components/schemas/Address'
-        ssnLast4:
-            type: string
-            pattern: '^[0-9]{4}$'
-            nullable: true
-            description: Last four digits only if available/allowed.
-    
-    PersonDependent:
-      type: object
-      required: [relationship, firstName, lastName, dateOfBirth]
-      properties:
-        relationship:
-          type: string
-          enum: [spouse, child, domestic_partner, other]
-        firstName:
-          type: string
-          maxLength: 80
-        middleName:
-          type: string
-          maxLength: 80
-          nullable: true
-        lastName:
-          type: string
-          maxLength: 120
-        dateOfBirth:
-          type: string
-          format: date
-        gender:
-          type: string
-          enum: [M, F, X, U]
-          nullable: true
-        disabled:
-          type: boolean
-          nullable: true
-          description: Indicates if the dependent is disabled for eligibility considerations.
-    
-    Address:
-      type: object
-      required: [line1, city, state, postalCode, country]
-      properties:
-        line1:
-          type: string
-          maxLength: 100
-        line2:
-          type: string
-          maxLength: 100
-          nullable: true
-        city:
-          type: string
-          maxLength: 100
-        state:
-          type: string
-          maxLength: 2
-          description: Two-letter state / province code.
-        postalCode:
-          type: string
-          maxLength: 15
-        country:
-          type: string
-          maxLength: 2
-          description: ISO 3166-1 alpha-2 country code.
-    
-    EnrolledPlan:
-      type: object
-      required: [planId, planName, carrier, coverageLevel, effectiveDate, premium]
-      properties:
-        planId:
-          type: string
-          description: Marketplace or internal plan identifier.
-        planName:
-          type: string
-        carrier:
-          type: string
-        metalLevel:
-          type: string
-          enum: [bronze, silver, gold, platinum, catastrophic]
-          nullable: true
-        coverageLevel:
-          type: string
-          enum: [employee_only, employee_spouse, employee_child, family]
-        effectiveDate:
-          type: string
-          format: date
-        terminationDate:
-          type: string
-          format: date
-          nullable: true
-        premium:
-          $ref: '#/components/schemas/PremiumAmounts'
-        hsaCompatible:
-          type: boolean
-          nullable: true
-        networkType:
-          type: string
-          enum: [ppo, hmo, epo, pos, other]
-          nullable: true
-    
-    PremiumAmounts:
-      type: object
-      required: [totalMonthly]
-      properties:
-        totalMonthly:
-          type: number
-          format: double
-        employerContribution:
-          type: number
-          format: double
-          nullable: true
-        employeeContribution:
-          type: number
-          format: double
-          nullable: true
-      description: Monthly premium and contribution breakdown.
-
     SnapshotBatchStatus:
       type: object
       description: Status details for a submitted snapshot batch.
@@ -465,7 +217,6 @@ components:
           items:
             $ref: '#/components/schemas/SnapshotItemStatus'
       required: [batchId, status, submittedAt, lastUpdatedAt, totalItems, acceptedCount, rejectedCount]
-
     SnapshotItemStatus:
       type: object
       description: Per-snapshot processing result.
@@ -488,7 +239,6 @@ components:
           items:
             $ref: '#/components/schemas/SnapshotItemError'
       required: [index, state]
-
     SnapshotItemError:
       type: object
       description: Error encountered processing an individual snapshot item.
@@ -501,18 +251,6 @@ components:
           type: string
           description: JSONPath-like path to offending field when applicable.
       required: [code, message]
-
-    SnapshotSubmissionResponse:
-      type: object
-      properties:
-        batchId:
-          type: string
-        acceptedCount:
-          type: integer
-        rejectedCount:
-          type: integer
-        message:
-          type: string
     ValidationError:
       type: object
       properties:
@@ -529,3 +267,504 @@ components:
                 type: string
               message:
                 type: string
+
+    InboundMemberSnapshot:
+      type: object
+      description: Inbound member snapshot payload.
+      properties:
+        coverage:
+          $ref: '#/components/schemas/InboundMemberSnapshotCoverage'
+          description: Coverage and enrollment decisions for each member
+        dependents:
+          type: array
+          description: List of demographic information for each dependent
+          items:
+            $ref: '#/components/schemas/InboundMemberSnapshotDependent'
+        employee:
+          $ref: '#/components/schemas/InboundMemberSnapshotEmployee'
+          description: Demographic information for the employee
+        events:
+          type: array
+          description: List of events associated with member and coverage updates
+          items:
+            $ref: '#/components/schemas/InboundMemberSnapshotEvent'
+      required: [employee]
+      additionalProperties: false
+    OutboundMemberSnapshot:
+      type: object
+      description: Outbound representation of a member snapshot after processing.
+      properties:
+        created:
+          type: integer
+          description: The date the record was created
+        created_members:
+          type: array
+          description: List of created members
+          items:
+            $ref: '#/components/schemas/OutboundMemberSnapshotCreatedMember'
+        employee_id:
+          type: string
+          format: uuid
+          description: Unique ID of the employee
+        fulfillment_summary:
+          type: array
+          description: List of member snapshot fulfillment statuses per carrier
+          items:
+            $ref: '#/components/schemas/CarrierFulfillmentStatus'
+        id:
+          type: string
+          format: uuid
+          description: Unique identifier of the record
+        inbound_snapshot:
+          type: string
+          description: Exact inbound snapshot prior to processing
+        member_snapshot:
+          type: object
+          description: Member snapshot post processing
+          required: [employee]
+          properties:
+            coverages:
+              type: array
+              description: List of coverage and enrollment decisions for each member
+              items:
+                $ref: '#/components/schemas/InboundMemberSnapshotCoverage'
+            dependents:
+              type: array
+              description: List of demographic information for each dependent
+              items:
+                $ref: '#/components/schemas/InboundMemberSnapshotDependent'
+            employee:
+              $ref: '#/components/schemas/InboundMemberSnapshotEmployee'
+              description: Demographic information for the employee
+            events:
+              type: array
+              description: List of events associated with member and coverage updates
+              items:
+                $ref: '#/components/schemas/InboundMemberSnapshotEvent'
+        modified:
+          type: integer
+          description: The date the record was last updated
+        replaced_by:
+          type: string
+          format: uuid
+          description: UUID of the member snapshot that replaced this snapshot
+        status:
+          type: string
+          description: Status of the member snapshot
+          enum: [processing, completed, replaced, canceled, submitted]
+        version:
+          type: string
+          format: uuid
+          description: Current version of the record
+        warnings:
+          type: array
+          description: Warnings generated during processing of the member snapshot
+          items:
+            type: string
+      required: [created, created_members, employee_id, id, member_snapshot, modified, status, version, warnings]
+      additionalProperties: false
+    CarrierFulfillmentStatus:
+      properties:
+        carrier_id:
+          description: Unique identifier of the Carrier
+          format: uuid
+          type: string
+        errors:
+          description: Errors generated while processing the member snapshot at the carrier
+          items:
+            type: string
+          type: array
+        status:
+          description: Status of the member snapshot fulfillment at carrier
+          enum: [invalid, no_changes, processing, replaced, scheduled, sent, valid, not_connected]
+          type: string
+      required: [carrier_id, status]
+      type: object
+    InboundMemberSnapshotAddress:
+      properties:
+        city:
+          description: City of the address
+          example: Bend
+          type: string
+        county:
+          description: County of the address
+          example: Deschutes
+          type: string
+        state:
+          description: State postal code of the address
+          enum: [AL, AK, AZ, AR, CA, CO, CT, DE, DC, FL, GA, HI, ID, IL, IN, IA, KS, KY, LA, ME, MD, MA, MI, MN, MS, MO, MT, NE, NV, NH, NJ, NM, NY, NC, ND, OH, OK, OR, PA, RI, SC, SD, TN, TX, UT, VT, VA, WA, WV, WI, WY, AS, GU, MH, FM, MP, PW, PR, VI, UM]
+          example: OR
+          type: string
+        street_one:
+          description: Line one of the address
+          example: 339 Hickory Street
+          type: string
+        street_two:
+          description: Line two of the address
+          example: Apartment 5
+          type: string
+        zip_code:
+          description: Zip code of the address
+          example: '97701'
+          type: string
+      required: [city, state, street_one, zip_code]
+      type: object
+    InboundMemberSnapshotCoverage:
+      properties:
+        carrier_specific_config:
+          description: Enrollment classifications required by the carrier
+          type: object
+        carrier_id:
+          description: Carrier ID associated with this coverage
+          format: uuid
+          type: string
+        carrier_plan_id:
+          description: Carrier specific plan ID.
+          minLength: 1
+          type: string
+        enrolled_members:
+          description: Employee and dependent members enrolling in this coverage
+          items:
+            $ref: '#/components/schemas/InboundMemberSnapshotEnrolledMember'
+          type: array
+        plan_hios_id:
+          description: The unique ID of the plan associated with this coverage. This field is required when `plan_name` is not provided.
+          format: uuid
+          type: string
+        plan_name:
+          description: The name of this plan in your records or the name that maps to a group plan . This field is required when `plan_id` is not provided.
+          minLength: 1
+          type: string
+      required: [carrier_id, plan_hios_id, enrolled_members]
+      type: object
+    InboundMemberSnapshotDependent:
+      properties:
+        partner_individual_id:
+          description: Custom ID of the Dependent from partner system.
+          minLength: 1
+          type: string
+        person:
+          $ref: '#/components/schemas/InboundMemberSnapshotPerson'
+          description: Personal information for the dependent
+        relationship:
+          description: Relationship of the dependent to the employee
+          enum: [spouse, child, domestic-partner]
+          type: string
+      required: [person, relationship]
+      type: object
+    InboundMemberSnapshotEmployee:
+      properties:
+        partner_individual_id:
+          description: Custom ID of the Employee from partner system.
+          minLength: 1
+          type: string
+        employment:
+          $ref: '#/components/schemas/InboundMemberSnapshotEmployment'
+          description: Employment information for the employee
+        person:
+          $ref: '#/components/schemas/InboundMemberSnapshotPerson'
+          description: Personal information for the employee
+      required: [employment, person]
+      type: object
+    InboundMemberSnapshotEmployment:
+      properties:
+        employment_dates:
+          $ref: '#/components/schemas/InboundMemberSnapshotEmploymentDates'
+          description: Employee employment dates
+        employment_status:
+          description: Employee employment status
+          enum: [full-time, part-time, contract, disabled, terminated, retired]
+          type: string
+        hours_worked:
+          description: An integer of hours worked per week by the employee
+          example: 40
+          format: int32
+          type: integer
+        occupation:
+          description: Employee occupation or job title
+          example: Engineer
+          type: string
+        salary:
+          $ref: '#/components/schemas/InboundMemberSnapshotSalary'
+          description: Employee salary information
+      required: [employment_dates, employment_status, hours_worked]
+      type: object
+    InboundMemberSnapshotEmploymentDates:
+      properties:
+        full_time_start:
+          description: ISO-8601 date string for start date as a full time employee with the group (if applicable)
+          example: '2017-01-17'
+          type: string
+        hire_date:
+          description: ISO-8601 date string for the hire date of the employee
+          example: '2017-01-17'
+          format: date
+          type: string
+        rehire:
+          description: ISO-8601 date string for the rehire date of the employee (if applicable)
+          example: '2018-02-01'
+          type: string
+        retirement:
+          description: ISO-8601 date string for the retirement date of the employee (if applicable)
+          example: '2019-01-01'
+          type: string
+        terminated:
+          description: ISO-8601 date string for the termination date of the employee (if applicable)
+          example: '2018-01-01'
+          type: string
+      required: [hire_date]
+      type: object
+    InboundMemberSnapshotEnrolledMember:
+      properties:
+        effective_end_date:
+          description: Effective end date of coverage for the member
+          example: '9999-12-31'
+          format: date
+          type: string
+        effective_start_date:
+          description: Original effective start date of coverage for the member
+          example: '2021-01-01'
+          format: date
+          type: string
+        event_id:
+          description: The unique ID of an event from the snapshot events list
+          example: '1'
+          minLength: 1
+          type: string
+        partner_individual_id:
+          description: Unique ID of the employee or dependent from the snapshot
+          format: uuid
+          nullable: true
+          type: string
+        pcp_details:
+          $ref: '#/components/schemas/InboundMemberSnapshotPCPDetails'
+          description: Details about primary care providers
+      required: [partner_individual_id, effective_end_date, effective_start_date]
+      type: object
+    InboundMemberSnapshotEvent:
+      properties:
+        date:
+          description: The date the event occurred
+          format: date
+          type: string
+        id:
+          description: Unique ID for the event, used internally in this payload
+          minLength: 1
+          type: string
+        reason:
+          description: The cause or real world scenario described in the event
+          enum: []
+          type: string
+        type:
+          description: The type or category of member change made due to this event
+          enum: [coverage, demographic]
+          type: string
+      required: [date, id, reason, type]
+      type: object
+    InboundMemberSnapshotPCPDetails:
+      properties:
+        providers:
+          description: List of primary care providers
+          items:
+            $ref: '#/components/schemas/InboundMemberSnapshotPrimaryCareProvider'
+          type: array
+      required: [providers]
+      type: object
+    InboundMemberSnapshotPerson:
+      properties:
+        contact:
+          $ref: '#/components/schemas/InboundMemberSnapshotPersonContact'
+          description: Contact information for the person
+        date_of_birth:
+          description: ISO-8601 date string for the date of birth of the person
+          example: '1977-06-03'
+          format: date
+          type: string
+        details:
+          $ref: '#/components/schemas/InboundMemberSnapshotPersonDetails'
+          description: Additional personal details of the person
+        first_name:
+          description: First name of the person
+          example: Catherine
+          type: string
+        home_address:
+          $ref: '#/components/schemas/InboundMemberSnapshotAddress'
+          description: Home address of the person
+        last_name:
+          description: Last name of the person
+          example: Briggs
+          type: string
+        maiden_name:
+          description: Maiden name of the person (deprecated)
+          type: string
+        mailing_address:
+          $ref: '#/components/schemas/InboundMemberSnapshotAddress'
+          description: Mailing address of the person
+        marital_status:
+          description: Marital status of the person
+          enum: [single, married, domestic-partner, divorced, widowed, legally-separated]
+          example: married
+          type: string
+        middle_name:
+          description: Middle name of the person
+          example: S
+          type: string
+        sex:
+          description: Sex of the person
+          enum: [F, M, U, X]
+          example: F
+          type: string
+        ssn:
+          description: Social Security Number of the person
+          example: '123456789'
+          nullable: true
+          type: string
+        suffix:
+          description: Suffix of the person
+          type: string
+      required: [date_of_birth, first_name, home_address, last_name, mailing_address, sex]
+      type: object
+    InboundMemberSnapshotPersonContact:
+      properties:
+        email_address:
+          description: Email address of the person
+          example: catherine.briggs@example.com
+          format: email
+          nullable: true
+          type: string
+        email_address_type:
+          description: Type of email address
+          enum: [home, work]
+          example: home
+          type: string
+        home_phone:
+          description: Home phone number in E.164 format
+          example: '+15555551212'
+          type: string
+        preferred_language:
+          description: Preferred written or spoken language of the person
+          example: English
+          type: string
+        preferred_method:
+          description: Preferred method of contact for the person
+          enum: [mail, email, home-phone, work-phone, other]
+          example: email
+          type: string
+        speaks_english:
+          description: True if the person can speak or communicate in English
+          example: true
+          type: boolean
+        work_phone:
+          description: Work phone number in E.164 format
+          example: '+15555551212'
+          type: string
+      type: object
+    InboundMemberSnapshotPersonDetails:
+      properties:
+        disability:
+          $ref: '#/components/schemas/InboundMemberSnapshotPersonDisability'
+          description: Disability details (if applicable)
+        is_military:
+          description: True if the person is in the military
+          type: boolean
+        is_student:
+          description: True if the person is a student
+          type: boolean
+        tobacco:
+          $ref: '#/components/schemas/InboundMemberSnapshotPersonTobacco'
+          description: Tobacco usage details (if applicable)
+      type: object
+    InboundMemberSnapshotPersonDisability:
+      properties:
+        communication:
+          description: True if the disability impacts the ability to communicate or read
+          type: boolean
+        disabled:
+          description: True if the member has a disability
+          type: boolean
+        reason:
+          description: Description of the disability
+          type: string
+      type: object
+    InboundMemberSnapshotPersonTobacco:
+      properties:
+        duration:
+          description: Duration of tobacco use
+          example: 5 years
+          type: string
+        user:
+          description: True if the person uses tobacco of any kind
+          example: true
+          type: boolean
+      type: object
+    InboundMemberSnapshotPrimaryCareProvider:
+      properties:
+        entity_identifier_code:
+          description: Code of the entity identifier
+          enum: [pcp, obgyn]
+          type: string
+        entity_type:
+          description: Type of entity
+          enum: [person, non_person_entity]
+          type: string
+        first_name:
+          description: First name of the primary care provider
+          type: string
+        identification_code:
+          description: Code of the identification
+          type: string
+        identification_code_type:
+          description: Type of the identification code
+          enum: [service_provider_number, national_provider_identifier]
+          type: string
+        last_name:
+          description: Last name of the primary care provider
+          type: string
+        middle_name:
+          description: Middle name of the primary care provider
+          type: string
+        organization_name:
+          description: Organization name of the primary care provider.
+          type: string
+        patient_relationship_code:
+          description: Code which represents the relationship of the patient to the primary care provider
+          enum: [established, not_established, unknown]
+          type: string
+      required: [identification_code, identification_code_type]
+      type: object
+    InboundMemberSnapshotSalary:
+      properties:
+        amount:
+          description: Amount of salary earned by the employee in US dollars and cents, as a decimal value
+          example: 52000
+          minimum: 0
+          type: number
+        effective_date:
+          description: The ISO-8601 date-string the current employee salary is effective
+          example: '2022-02-01'
+          type: string
+        type:
+          description: Type of salary earned by the employee
+          enum: [hourly, salary]
+          example: salary
+          type: string
+        unit:
+          description: Unit of salary earned by the employee
+          enum: [annual, month, semi-monthly, week, hour]
+          example: annual
+          type: string
+      type: object
+    OutboundMemberSnapshotCreatedMember:
+      properties:
+        custom_individual_id:
+          description: Custom ID of the Member from the platform's system.
+          type: string
+        id:
+          description: Unique ID of the Member 's system.
+          format: uuid
+          type: string
+        type:
+          description: Type of the Member. Either 'employee' or 'dependent.
+          type: string
+      required: [id, type]
+      type: object
