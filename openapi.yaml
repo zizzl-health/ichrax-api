@@ -27,12 +27,12 @@ paths:
                 $ref: '#/components/schemas/InboundMemberSnapshot'
 
       responses:
-        '201':
-          description: Successful Response - Returns the contents of the newly created Member Snapshot
+        '200':
+          description: Successful Response - Returns the Job ID for tracking
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/OutboundMemberSnapshot'
+                $ref: '#/components/schemas/OutboundMemberSnapshotJobID'                
         '400':
           description: Failure Response - Client error
           content:
@@ -63,36 +63,23 @@ paths:
             application/json:
               schema:
                 type: object
-              examples:
-                example:
-                  value:
-                    message: >-
-                      This snapshot is missing the following active coverages: dental for dependent ab740704-7c37-4010-92b3-d22c6926be3e. If you intend to terminate a coverage, please send a snapshot that includes a termination date before omitting it from future snapshots.
-                    status: 422
       deprecated: false
-  /member-snapshots/batches/{batchId}:
+  /member-snapshots/job/{jobId}:
     get:
-      summary: Get snapshot batch processing status
+      summary: Get snapshot job processing status
       description: >-
-        Returns current processing status for a previously submitted enrollment snapshot batch.
-        Optionally include per-item statuses. Batch statuses may evolve through states such as
+        Returns current processing status for a previously submitted enrollment snapshot job.
+        Optionally include per-item statuses. Job statuses may evolve through states such as
         RECEIVED -> VALIDATING -> PROCESSING -> COMPLETED (or FAILED). Implementations may
         expand status values; clients should treat unknown values as non-terminal unless documented otherwise.
       operationId: getSnapshotBatchStatus
       parameters:
-        - name: batchId
+        - name: jobId
           in: path
-          description: Identifier returned from the original batch submission.
+          description: Identifier returned from the original job submission.
           required: true
           schema:
             type: string
-        - name: includeItems
-          in: query
-          required: false
-          schema:
-            type: boolean
-            default: false
-          description: When true, include per-snapshot item statuses (may be large for big batches).
       responses:
         '200':
           description: Current batch status (and optionally item details)
@@ -272,12 +259,16 @@ components:
       type: object
       description: Inbound member snapshot payload.
       properties:
+        individual_transaction_id:
+          description: A unique identifier for the transaction.
+          minLength: 1
+          type: string
         partner_individual_id:
-          description: Custom ID of the primary individual (employee) from the partner system.
+          description: ID of the primary individual (employee) from the partner system.
           minLength: 1
           type: string
         partner_organization_id:
-          description: Custom ID of the related organization/employer from the partner system.
+          description: ID of the related organization/employer from the partner system.
           minLength: 1
           type: string
         coverage:
@@ -296,98 +287,37 @@ components:
           description: List of events associated with member and coverage updates
           items:
             $ref: '#/components/schemas/InboundMemberSnapshotEvent'
-      required: [employee]
+      required: [employee, individual_transaction_id, partner_individual_id, partner_organization_id, coverage]
+      additionalProperties: false
+    OutboundMemberSnapshotJobID:
+      type: object
+      description: Outbound representation of a member snapshot after processing.
+      properties:         
+        job_id:
+          type: string
+          format: uuid
+          description: Unique identifier of the job
+      required: [job_id]
       additionalProperties: false
     OutboundMemberSnapshot:
       type: object
       description: Outbound representation of a member snapshot after processing.
-      properties:
-        created:
-          type: integer
-          description: The date the record was created
-        created_members:
-          type: array
-          description: List of created members
-          items:
-            $ref: '#/components/schemas/OutboundMemberSnapshotCreatedMember'
-        employee_id:
-          type: string
-          format: uuid
-          description: Unique ID of the employee
-        fulfillment_summary:
-          type: array
-          description: List of member snapshot fulfillment statuses per carrier
-          items:
-            $ref: '#/components/schemas/CarrierFulfillmentStatus'
-        id:
+      properties:         
+        individual_transaction_id:
           type: string
           format: uuid
           description: Unique identifier of the record
-        inbound_snapshot:
-          type: string
-          description: Exact inbound snapshot prior to processing
-        member_snapshot:
-          type: object
-          description: Member snapshot post processing
-          required: [employee]
-          properties:
-            coverages:
-              type: array
-              description: List of coverage and enrollment decisions for each member
-              items:
-                $ref: '#/components/schemas/InboundMemberSnapshotCoverage'
-            dependents:
-              type: array
-              description: List of demographic information for each dependent
-              items:
-                $ref: '#/components/schemas/InboundMemberSnapshotDependent'
-            employee:
-              $ref: '#/components/schemas/InboundMemberSnapshotEmployee'
-              description: Demographic information for the employee
-            events:
-              type: array
-              description: List of events associated with member and coverage updates
-              items:
-                $ref: '#/components/schemas/InboundMemberSnapshotEvent'
-        modified:
-          type: integer
-          description: The date the record was last updated
-        replaced_by:
-          type: string
-          format: uuid
-          description: UUID of the member snapshot that replaced this snapshot
         status:
           type: string
           description: Status of the member snapshot
-          enum: [processing, completed, replaced, canceled, submitted]
-        version:
-          type: string
-          format: uuid
-          description: Current version of the record
+          enum: [pending, in_progress, error, complete]       
         warnings:
           type: array
           description: Warnings generated during processing of the member snapshot
           items:
             type: string
-      required: [created, created_members, employee_id, id, member_snapshot, modified, status, version, warnings]
+      required: [status,  warnings]
       additionalProperties: false
-    CarrierFulfillmentStatus:
-      properties:
-        carrier_id:
-          description: Unique identifier of the Carrier
-          format: uuid
-          type: string
-        errors:
-          description: Errors generated while processing the member snapshot at the carrier
-          items:
-            type: string
-          type: array
-        status:
-          description: Status of the member snapshot fulfillment at carrier
-          enum: [invalid, no_changes, processing, replaced, scheduled, sent, valid, not_connected]
-          type: string
-      required: [carrier_id, status]
-      type: object
     InboundMemberSnapshotAddress:
       properties:
         city:
@@ -882,17 +812,4 @@ components:
           example: annual
           type: string
       type: object
-    OutboundMemberSnapshotCreatedMember:
-      properties:
-        custom_individual_id:
-          description: Custom ID of the Member from the platform's system.
-          type: string
-        id:
-          description: Unique ID of the Member 's system.
-          format: uuid
-          type: string
-        type:
-          description: Type of the Member. Either 'employee' or 'dependent.
-          type: string
-      required: [id, type]
-      type: object
+   
