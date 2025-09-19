@@ -11,7 +11,7 @@ info:
 paths:
   /member-snapshots:
     post:
-      summary: Create Member Snapshot
+      summary: Create Member Snapshots
       description: >-
         Accepts an array of employee enrollment snapshot objects representing an employee (primary) and any dependents and the plan they are enrolled in. Reference identifier fields are placeholders (TBD) for partner and internal linking.
       operationId: createMemberSnapshot
@@ -82,48 +82,27 @@ paths:
             type: string
       responses:
         '200':
-          description: Current batch status (and optionally item details)
+          description: Multi-status response for a processed member snapshot job.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SnapshotBatchStatus'
+                $ref: '#/components/schemas/MultiStatusMemberSnapshotJob'
               examples:
-                processingNoItems:
-                  summary: Batch still processing, items omitted
+                multiStatusExample:
+                  summary: Example multi-status job response
                   value:
-                    batchId: BATCH-20250916-ABC123
-                    status: PROCESSING
-                    submittedAt: '2025-09-16T15:05:00Z'
-                    lastUpdatedAt: '2025-09-16T15:06:10Z'
-                    totalItems: 10
-                    acceptedCount: 4
-                    rejectedCount: 1
-                completedWithItems:
-                  summary: Completed with per-item statuses
-                  value:
-                    batchId: BATCH-20250916-DEF456
-                    status: COMPLETED
-                    submittedAt: '2025-09-16T14:55:00Z'
-                    lastUpdatedAt: '2025-09-16T15:00:30Z'
-                    totalItems: 3
-                    acceptedCount: 2
-                    rejectedCount: 1
-                    items:
-                      - index: 0
-                        state: ACCEPTED
-                        employeeInternalId: EMP-123
-                        partnerReferenceId: PARTNER-1
-                      - index: 1
-                        state: REJECTED
-                        partnerReferenceId: PARTNER-2
-                        errors:
-                          - code: required
-                            message: planId is required
-                            path: '$.enrolledPlan.planId'
-                      - index: 2
-                        state: ACCEPTED
-                        employeeInternalId: EMP-789
-                        partnerReferenceId: PARTNER-3
+                    job_id: 497d98f3-580a-4ab9-830a-af2346d029b2
+                    status: complete
+                    body:
+                      - individual_transaction_id: 430f9d95-1dcf-4b99-b616-45f814416890
+                        code: 201
+                        message: Successfully enrolled individual in benefit
+                      - individual_transaction_id: 647975ac-1e0f-4e9c-b705-e3042da48581
+                        code: 200
+                        message: Successfully updated enrollment for individual
+                      - individual_transaction_id: 4a0a3b15-d3d6-41c2-a4a4-ca4ed1b68cf8
+                        code: 404
+                        message: Individual not found
         '400':
           description: Invalid batchId format or unsupported query combination
           content:
@@ -168,76 +147,10 @@ paths:
                   value:
                     message: Unexpected server error
       tags:
-        - Enrollment Snapshots
+        - Member Snapshots
 
 components:
   schemas:
-    SnapshotBatchStatus:
-      type: object
-      description: Status details for a submitted snapshot batch.
-      properties:
-        batchId:
-          type: string
-        status:
-          type: string
-          enum: [RECEIVED, VALIDATING, PROCESSING, COMPLETED, FAILED]
-          description: Current lifecycle state of the batch.
-        submittedAt:
-          type: string
-          format: date-time
-        lastUpdatedAt:
-          type: string
-          format: date-time
-        totalItems:
-          type: integer
-        acceptedCount:
-          type: integer
-        rejectedCount:
-          type: integer
-        failureMessage:
-          type: string
-          nullable: true
-          description: Present only if status=FAILED.
-        items:
-          type: array
-          description: Present only when includeItems=true & status has progressed beyond RECEIVED.
-          items:
-            $ref: '#/components/schemas/SnapshotItemStatus'
-      required: [batchId, status, submittedAt, lastUpdatedAt, totalItems, acceptedCount, rejectedCount]
-    SnapshotItemStatus:
-      type: object
-      description: Per-snapshot processing result.
-      properties:
-        index:
-          type: integer
-          description: 0-based index within original submitted array.
-        state:
-          type: string
-          enum: [PENDING, ACCEPTED, REJECTED]
-        employeeInternalId:
-          type: string
-          nullable: true
-          description: Echo of internalEmployeeId if available.
-        partnerReferenceId:
-          type: string
-          nullable: true
-        errors:
-          type: array
-          items:
-            $ref: '#/components/schemas/SnapshotItemError'
-      required: [index, state]
-    SnapshotItemError:
-      type: object
-      description: Error encountered processing an individual snapshot item.
-      properties:
-        code:
-          type: string
-        message:
-          type: string
-        path:
-          type: string
-          description: JSONPath-like path to offending field when applicable.
-      required: [code, message]
     ValidationError:
       type: object
       properties:
@@ -299,24 +212,40 @@ components:
           description: Unique identifier of the job
       required: [job_id]
       additionalProperties: false
-    OutboundMemberSnapshot:
+    MultiStatusMemberSnapshotJob:
       type: object
-      description: Outbound representation of a member snapshot after processing.
-      properties:         
+      description: Aggregated multi-status result for a submitted member snapshot job.
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: Unique identifier of the job.
+        status:
+          type: string
+          description: Overall processing status of the job.
+          enum: [pending, processing, complete, error]
+        body:
+          type: array
+          description: Per-snapshot outcome details.
+          items:
+            $ref: '#/components/schemas/MultiStatusMemberSnapshotJobItem'
+      required: [job_id, status, body]
+      additionalProperties: false
+    MultiStatusMemberSnapshotJobItem:
+      type: object
+      description: Outcome for an individual snapshot within the job.
+      properties:
         individual_transaction_id:
           type: string
           format: uuid
-          description: Unique identifier of the record
-        status:
+          description: Identifier for the individual snapshot transaction.
+        code:
+          type: integer
+          description: HTTP-like status code representing the outcome.
+        message:
           type: string
-          description: Status of the member snapshot
-          enum: [pending, in_progress, error, complete]       
-        warnings:
-          type: array
-          description: Warnings generated during processing of the member snapshot
-          items:
-            type: string
-      required: [status,  warnings]
+          description: Human-readable message describing the outcome.
+      required: [individual_transaction_id, code, message]
       additionalProperties: false
     InboundMemberSnapshotAddress:
       properties:
